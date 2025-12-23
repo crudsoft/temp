@@ -1,0 +1,1545 @@
+> analiza mi proyecto, que mejoras realizarias?
+
+⏺ Voy a realizar un análisis completo de tu proyecto para identificar mejoras potenciales.
+
+⏺ Read(app/src/main/java/uy/com/itau/middleapi/operations/repository/OperationRepository.java)
+  ⎿  Read 60 lines
+
+⏺ Read(app/src/main/java/uy/com/itau/middleapi/operations/validation/OperationsRequestValidator.java)
+  ⎿  Read 32 lines
+
+⏺ Read(app/src/main/java/uy/com/itau/middleapi/operations/exception/GlobalExceptionHandler.java)
+  ⎿  Read 83 lines
+
+⏺ Read(app/src/main/java/uy/com/itau/middleapi/operations/dto/OperationsRequestDto.java)
+  ⎿  Read 35 lines
+
+⏺ Read(app/src/main/java/uy/com/itau/middleapi/operations/mapper/OperationMapper.java)
+  ⎿  Read 130 lines
+
+⏺ Read(app/src/main/java/uy/com/itau/middleapi/operations/filter/FilterConfig.java)
+  ⎿  Read 21 lines
+
+⏺ Read(app/src/main/java/uy/com/itau/middleapi/operations/util/Constants.java)
+  ⎿  Read 30 lines
+
+⏺ Read(app/src/main/java/uy/com/itau/middleapi/operations/model/Channel.java)
+  ⎿  Read 10 lines
+
+⏺ Search(pattern: "**/*Test.java")
+  ⎿  Found 1 file (ctrl+o to expand)
+
+⏺ Read(app/src/test/java/uy/com/itau/middleapi/operations/controller/HealthControllerTest.java)
+  ⎿  Read 25 lines
+
+⏺ Read(app/src/main/java/uy/com/itau/middleapi/operations/validation/OperationsTypeUtil.java)
+  ⎿  Read 59 lines
+
+⏺ Read(app/src/main/java/uy/com/itau/middleapi/operations/dto/GetOperationsRequestDto.java)
+  ⎿  Read 50 lines
+
+⏺ He completado el análisis de tu proyecto. Aquí están las mejoras recomendadas organizadas por prioridad:
+
+  🔴 CRÍTICO - Alta Prioridad
+
+  1. Testing - Cobertura Prácticamente Nula
+
+  Problema: Solo existe un test comentado (HealthControllerTest.java:1-25)
+  - 0% de cobertura de código
+  - Sin tests unitarios ni de integración
+  - Imposible garantizar calidad del código
+
+  Impacto: Alto riesgo en producción, bugs no detectados, refactorings peligrosos
+
+  Recomendaciones:
+  // Agregar tests unitarios para servicios
+  @SpringBootTest
+  class OperationServiceImplTest {
+
+      @MockBean
+      private OperationRepository operationRepository;
+
+      @MockBean
+      private ApiClient serviceApi;
+
+      @Autowired
+      private OperationService operationService;
+
+      @Test
+      void createOperation_withValidData_shouldCreateSuccessfully() {
+          // Given
+          OperationsRequestDto request = createValidRequest();
+          Operation expected = createExpectedOperation();
+          when(operationRepository.save(any())).thenReturn(expected);
+
+          // When
+          OperationsResponseDto result = operationService.createOperation(request);
+
+          // Then
+          assertNotNull(result);
+          assertEquals(OperationStatus.PENDING, result.getStatus());
+      }
+
+      @Test
+      void confirmOperation_whenAlreadyConfirmed_shouldThrowException() {
+          // Test de casos edge
+      }
+  }
+
+  // Tests de integración
+  @SpringBootTest
+  @AutoConfigureMockMvc
+  class OperationsControllerIntegrationTest {
+
+      @Autowired
+      private MockMvc mockMvc;
+
+      @Test
+      void createOperation_endToEnd() throws Exception {
+          mockMvc.perform(post("/v1/operations")
+                  .contentType(MediaType.APPLICATION_JSON)
+                  .content(validRequestJson))
+                  .andExpect(status().isOk())
+                  .andExpect(jsonPath("$.operationId").exists());
+      }
+  }
+
+  Meta: Mínimo 80% cobertura (líneas), 70% cobertura (ramas)
+
+  ---
+  2. Seguridad - Credenciales Hardcodeadas
+
+  Problema: application.properties:33-41 contiene credenciales en texto plano
+  spring.datasource.read.url=jdbc:postgresql://localhost:5432/postgres
+  spring.datasource.read.username=postgres
+  spring.datasource.read.password=postgres  # ❌ CRÍTICO
+
+  Recomendaciones:
+  # Usar variables de entorno o Secrets Manager
+  spring.datasource.read.url=${DB_READ_URL}
+  spring.datasource.read.username=${DB_READ_USERNAME}
+  spring.datasource.read.password=${DB_READ_PASSWORD}
+
+  # O mejor, usar completamente Secrets Manager (ya tienes la dependencia)
+  spring.datasource.read.url=jdbc-secretsmanager:postgresql://${AURORA_ADDRESS_READ}/${DB_ID}
+
+  ---
+  3. Transacciones Peligrosas
+
+  Problema: OperationServiceImpl.java:65
+  @Transactional(noRollbackFor = Exception.class)  // ❌ PELIGROSO
+  public OperationsResponseDto createOperation(OperationsRequestDto dto) {
+
+  Impacto: Si ocurre un error, los datos quedan en estado inconsistente
+
+  Recomendación:
+  @Transactional  // Solo rollback en RuntimeException (comportamiento por defecto)
+  public OperationsResponseDto createOperation(OperationsRequestDto dto) {
+      // Si necesitas guardar el estado incluso con error de SEC validation
+      // usa transacciones anidadas con REQUIRES_NEW
+  }
+
+  // Para el caso específico de SEC validation
+  @Transactional
+  public OperationsResponseDto createOperation(OperationsRequestDto dto) {
+      Operation operation = operationMapper.toEntity(dto);
+      invalidatePendingOperations(operation);
+      operation = saveOperationInNewTransaction(operation);  // Nueva transacción
+
+      try {
+          if (SEC_VALIDATION_ENABLED && operation.shouldPerformSecValidation()) {
+              performSecValidation(dto, operation);
+          }
+      } catch (SecValidationRejectedException e) {
+          updateOperationStatusInNewTransaction(operation, e);  // Nueva transacción
+          throw e;
+      }
+
+      return operationMapper.toDto(operation);
+  }
+
+  @Transactional(propagation = Propagation.REQUIRES_NEW)
+  protected Operation saveOperationInNewTransaction(Operation operation) {
+      return operationRepository.save(operation);
+  }
+
+  ---
+  4. Repository Inconsistente
+
+  Problema: OperationRepository.java:18
+  @Qualifier("read")  // ❌ Marcado como "read"
+  public interface OperationRepository extends JpaRepository<Operation, UUID> {
+
+      @Modifying  // ❌ Pero hace operaciones de ESCRITURA
+      @Query("UPDATE Operation...")
+      int updateStatus(...);
+  }
+
+  Recomendación:
+  // Separar en dos repositorios
+  @Repository
+  @Qualifier("write")
+  public interface OperationWriteRepository extends JpaRepository<Operation, UUID> {
+      @Modifying
+      @Query("UPDATE Operation...")
+      int updateStatus(...);
+  }
+
+  @Repository
+  @Qualifier("read")
+  public interface OperationReadRepository extends JpaRepository<Operation, UUID> {
+      @Query("SELECT o FROM Operation o WHERE...")
+      Page<Operation> findFilteredOperations(...);
+  }
+
+  // En el servicio, inyectar ambos
+  @Service
+  public class OperationServiceImpl {
+      private final OperationWriteRepository writeRepo;
+      private final OperationReadRepository readRepo;
+  }
+
+  ---
+  🟠 ALTO - Media-Alta Prioridad
+
+  5. Validación Duplicada
+
+  Problema: Lógica duplicada en:
+  - OperationsRequestDto.java:24-34
+  - OperationsRequestValidator.java:16-30
+  - GetOperationsRequestDto.java:34-48
+
+  Recomendación:
+  // Usar Bean Validation (JSR-303)
+  public record OperationsRequestDto(
+      String operationId,
+      String sourceId,
+
+      @NotNull(message = "Document type is required")
+      @Pattern(regexp = "[123489]", message = "Invalid document type")
+      String documentType,
+
+      @NotNull(message = "Document number is required")
+      @Pattern(regexp = "[a-zA-Z0-9]{1,12}", message = "Invalid document number")
+      String documentNumber,
+
+      @NotNull
+      @ValidOperationType  // Custom validator
+      String operationType,
+
+      @NotNull
+      @ValidChannel  // Custom validator
+      String channel,
+
+      @NotNull
+      JsonNode initialData,
+
+      JsonNode additionalInformation
+  ) {
+      // Validación cruzada si es necesaria
+      @AssertTrue(message = "Invalid document number for document type")
+      public boolean isDocumentNumberValidForType() {
+          if (documentType == null || documentNumber == null) return true;
+          if (documentType.matches("[1389]")) {
+              return documentNumber.matches("[0-9]{1,12}");
+          }
+          return true;
+      }
+  }
+
+  // En el controller, usar @Valid
+  @PostMapping
+  public ResponseEntity<OperationsResponseDto> createOperation(
+          @Valid @RequestBody OperationsRequestDto dto) {  // @Valid activa validación
+      return ResponseEntity.ok(operationService.createOperation(dto));
+  }
+
+  // Custom validator
+  @Target({ElementType.FIELD})
+  @Retention(RetentionPolicy.RUNTIME)
+  @Constraint(validatedBy = OperationTypeValidator.class)
+  public @interface ValidOperationType {
+      String message() default "Invalid operation type";
+      Class<?>[] groups() default {};
+      Class<? extends Payload>[] payload() default {};
+  }
+
+  @Component
+  public class OperationTypeValidator implements ConstraintValidator<ValidOperationType, String> {
+
+      @Autowired
+      private OperationsTypeUtil operationsTypeUtil;
+
+      @Override
+      public boolean isValid(String value, ConstraintValidatorContext context) {
+          return value != null && operationsTypeUtil.isValid(value);
+      }
+  }
+
+  ---
+  6. Manejo de Errores Inconsistente
+
+  Problema: GlobalExceptionHandler.java:78
+  private ResponseEntity<ErrorResponseDto> buildErrorResponse(Exception e, String errorCode, HttpStatus status) {
+      LOG.info("Handling exception: {}", e.getMessage());  // ❌ INFO en vez de ERROR
+      // ...
+  }
+
+  Problemas adicionales:
+  - Métodos con nombres duplicados (líneas 68, 73, 74)
+  - No se loguea el stack trace
+  - No hay ID de correlación en errores
+
+  Recomendación:
+  @ControllerAdvice
+  public class GlobalExceptionHandler {
+
+      private static final Logger LOG = LoggerFactory.getLogger(GlobalExceptionHandler.class);
+
+      @ExceptionHandler(Exception.class)
+      public ResponseEntity<ErrorResponseDto> handleGenericException(Exception e) {
+          String correlationId = RequestContext.getCorrelationId();
+          LOG.error("Unhandled exception [correlationId={}]", correlationId, e);  // ✅ ERROR + stack trace
+          return buildErrorResponse(e, Constants.GENERIC_ERROR, HttpStatus.INTERNAL_SERVER_ERROR, correlationId);
+      }
+
+      @ExceptionHandler(OperationNotFoundException.class)
+      public ResponseEntity<ErrorResponseDto> handleOperationNotFound(OperationNotFoundException e) {
+          String correlationId = RequestContext.getCorrelationId();
+          LOG.warn("Operation not found [correlationId={}]: {}", correlationId, e.getMessage());
+          return buildErrorResponse(e, Constants.OPERATION_NOT_FOUND_EXCEPTION, HttpStatus.NOT_FOUND, correlationId);
+      }
+
+      @ExceptionHandler(ValidationException.class)
+      public ResponseEntity<ErrorResponseDto> handleValidation(ValidationException e) {
+          String correlationId = RequestContext.getCorrelationId();
+          LOG.warn("Validation error [correlationId={}]: {}", correlationId, e.getMessage());
+          return buildErrorResponse(e, Constants.VALIDATION_ERROR, HttpStatus.BAD_REQUEST, correlationId);
+      }
+
+      // Renombrar métodos con nombres únicos
+      @ExceptionHandler(OperationNotPendingException.class)
+      public ResponseEntity<ErrorResponseDto> handleOperationNotPending(OperationNotPendingException e) {
+          String correlationId = RequestContext.getCorrelationId();
+          LOG.warn("Operation not pending [correlationId={}]: {}", correlationId, e.getMessage());
+          return buildErrorResponse(e, Constants.VALIDATION_ERROR, HttpStatus.BAD_REQUEST, correlationId);
+      }
+
+      private ResponseEntity<ErrorResponseDto> buildErrorResponse(
+              Exception e, String errorCode, HttpStatus status, String correlationId) {
+          ErrorResponseDto errorResponse = ErrorResponseDto.builder()
+              .errorCode(errorCode)
+              .errorMessage(e.getMessage())
+              .correlationId(correlationId)
+              .timestamp(LocalDateTime.now())
+              .build();
+          return ResponseEntity.status(status).body(errorResponse);
+      }
+  }
+
+  ---
+  7. Sin Circuit Breaker para Llamadas Externas
+
+  Problema: OperationServiceImpl.java:102-109 y TwoFactorServiceImpl.java:85-92
+  - Llamadas a servicios externos sin protección
+  - Si el servicio externo falla, toda la aplicación se bloquea
+  - No hay timeout configurado
+  - No hay retry logic
+
+  Recomendación:
+  <!-- Agregar Resilience4j al pom.xml -->
+  <dependency>
+      <groupId>org.springframework.cloud</groupId>
+      <artifactId>spring-cloud-starter-circuitbreaker-resilience4j</artifactId>
+  </dependency>
+
+  @Service
+  public class OperationServiceImpl implements OperationService {
+
+      @Autowired
+      private CircuitBreakerFactory circuitBreakerFactory;
+
+      private void performSecValidation(OperationsRequestDto requestDto, Operation operation) {
+          CircuitBreaker circuitBreaker = circuitBreakerFactory.create("secValidationService");
+
+          try {
+              SecValidationResponseDto validationResponse = circuitBreaker.run(
+                  () -> callSecValidationService(requestDto, operation),
+                  throwable -> handleSecValidationFallback(throwable, operation)
+              );
+
+              processSecValidationResponse(validationResponse, operation);
+
+          } catch (Exception e) {
+              handleSecValidationException(e, operation);
+          }
+      }
+
+      private SecValidationResponseDto callSecValidationService(
+              OperationsRequestDto requestDto, Operation operation) throws Exception {
+          SecValidationRequestDto validationRequest = buildSecValidationRequest(requestDto, operation);
+
+          ResponseEntity<?> responseEntity = serviceApi.makeRequest(
+              RequestContext.getRequest(),
+              String.format("https://%s", apiPrivateCustomDomain),
+              "/api-security-validation",
+              "/v1/two-factor-auth/analyzer",
+              HttpMethod.POST,
+              validationRequest
+          );
+
+          return objectMapper.readValue(
+              Objects.requireNonNull(responseEntity.getBody()).toString(),
+              SecValidationResponseDto.class
+          );
+      }
+
+      private SecValidationResponseDto handleSecValidationFallback(
+              Throwable throwable, Operation operation) {
+          LOG.error("Circuit breaker activated for SEC validation", throwable);
+          operation.setStatus(OperationStatus.REJECTED_BY_SEC_VALIDATION_INTERNAL_ERROR);
+          operation.setSecValidationMessage("Security service temporarily unavailable");
+          operationRepository.save(operation);
+          throw new SecValidationRejectedException("Security validation service unavailable");
+      }
+  }
+
+  # application.yml
+  resilience4j:
+    circuitbreaker:
+      instances:
+        secValidationService:
+          registerHealthIndicator: true
+          slidingWindowSize: 10
+          minimumNumberOfCalls: 5
+          permittedNumberOfCallsInHalfOpenState: 3
+          waitDurationInOpenState: 30s
+          failureRateThreshold: 50
+          slowCallDurationThreshold: 2s
+          slowCallRateThreshold: 50
+
+    timelimiter:
+      instances:
+        secValidationService:
+          timeoutDuration: 5s
+
+  ---
+  8. Cache para Operation Types
+
+  Problema: OperationsTypeUtil.java:34-39
+  - Se consulta Parameter Store en cada validación
+  - Alto latency innecesario
+  - Posible bottleneck en alta concurrencia
+
+  Recomendación:
+  <!-- Agregar cache al pom.xml -->
+  <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-cache</artifactId>
+  </dependency>
+  <dependency>
+      <groupId>com.github.ben-manes.caffeine</groupId>
+      <artifactId>caffeine</artifactId>
+  </dependency>
+
+  @Configuration
+  @EnableCaching
+  public class CacheConfig {
+
+      @Bean
+      public CacheManager cacheManager() {
+          CaffeineCacheManager cacheManager = new CaffeineCacheManager("operationTypes");
+          cacheManager.setCaffeine(Caffeine.newBuilder()
+              .expireAfterWrite(1, TimeUnit.HOURS)  // Cache por 1 hora
+              .maximumSize(100)
+              .recordStats());
+          return cacheManager;
+      }
+  }
+
+  @Component
+  public class OperationsTypeUtil {
+
+      @Cacheable(value = "operationTypes", key = "'all'")
+      public List<OperationType> getAllOperationTypes() {
+          JsonNode rootNode = objectMapper.convertValue(
+              configService.getCurrentConfig().get(Constants.OPERATIONS_TYPES),
+              JsonNode.class
+          );
+          // Parse y retornar lista
+      }
+
+      public boolean isValid(String type) {
+          return getAllOperationTypes().stream()
+              .anyMatch(op -> op.getType().equals(type));
+      }
+
+      @CacheEvict(value = "operationTypes", allEntries = true)
+      @Scheduled(cron = "0 0 * * * *")  // Refresh cada hora
+      public void clearCache() {
+          LOG.info("Clearing operation types cache");
+      }
+  }
+
+  ---
+  🟡 MEDIO - Media Prioridad
+
+  9. DTOs y Validación de Channel
+
+  Problema:
+  - Channel se recibe como String en DTO pero se mapea a Enum
+  - No hay validación de valores válidos
+  - Posible IllegalArgumentException en runtime
+
+  Recomendación:
+  public record OperationsRequestDto(
+      // ...
+      @NotNull
+      @ValidChannel
+      String channel,
+      // ...
+  ) {}
+
+  @Target({ElementType.FIELD})
+  @Retention(RetentionPolicy.RUNTIME)
+  @Constraint(validatedBy = ChannelValidator.class)
+  public @interface ValidChannel {
+      String message() default "Invalid channel";
+      Class<?>[] groups() default {};
+      Class<? extends Payload>[] payload() default {};
+  }
+
+  public class ChannelValidator implements ConstraintValidator<ValidChannel, String> {
+
+      @Override
+      public boolean isValid(String value, ConstraintValidatorContext context) {
+          if (value == null) return false;
+          try {
+              Channel.valueOf(value);
+              return true;
+          } catch (IllegalArgumentException e) {
+              return false;
+          }
+      }
+  }
+
+  ---
+  10. Magic Strings y Constantes
+
+  Problema: Validaciones con regex hardcodeados repetidos
+  - OperationsRequestValidator.java:17, 20, 23
+  - GetOperationsRequestDto.java:35, 38, 41
+
+  Recomendación:
+  public class ValidationConstants {
+      public static final String DOCUMENT_TYPE_REGEX = "[123489]";
+      public static final String DOCUMENT_NUMBER_ALPHANUMERIC_REGEX = "[a-zA-Z0-9]{1,12}";
+      public static final String DOCUMENT_NUMBER_NUMERIC_REGEX = "[0-9]{1,12}";
+      public static final String NUMERIC_DOCUMENT_TYPES = "[1389]";
+
+      public static final String INVALID_DOCUMENT_TYPE_MSG = "Invalid document type. Must be 1, 2, 3, 4, 8, or 9";
+      public static final String INVALID_DOCUMENT_NUMBER_MSG = "Invalid document number. Must be 1-12 alphanumeric characters";
+
+      private ValidationConstants() {}
+  }
+
+  // Uso
+  @Pattern(regexp = ValidationConstants.DOCUMENT_TYPE_REGEX,
+           message = ValidationConstants.INVALID_DOCUMENT_TYPE_MSG)
+  String documentType;
+
+  ---
+  11. Logging Mejorado
+
+  Problema: Logging inconsistente, falta contexto
+
+  Recomendación:
+  // Usar structured logging
+  @Service
+  public class OperationServiceImpl implements OperationService {
+
+      @Override
+      public OperationsResponseDto createOperation(OperationsRequestDto dto) {
+          String correlationId = RequestContext.getCorrelationId();
+
+          LOG.info("Creating operation [correlationId={}, operationType={}, documentNumber={}, channel={}]",
+              correlationId, dto.operationType(), maskDocumentNumber(dto.documentNumber()), dto.channel());
+
+          try {
+              // ... lógica
+              LOG.info("Operation created successfully [correlationId={}, operationId={}]",
+                  correlationId, operation.getId());
+          } catch (SecValidationRejectedException e) {
+              LOG.warn("Operation rejected by security validation [correlationId={}, code={}, message={}]",
+                  correlationId, operation.getSecValidationCode(), operation.getSecValidationMessage());
+              throw e;
+          } catch (Exception e) {
+              LOG.error("Error creating operation [correlationId={}]", correlationId, e);
+              throw e;
+          }
+      }
+
+      private String maskDocumentNumber(String documentNumber) {
+          if (documentNumber == null || documentNumber.length() <= 4) return "****";
+          return "****" + documentNumber.substring(documentNumber.length() - 4);
+      }
+  }
+
+  ---
+  12. Documentación de API (OpenAPI/Swagger)
+
+  Problema: No hay documentación de API automática
+
+  Recomendación:
+  <dependency>
+      <groupId>org.springdoc</groupId>
+      <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
+      <version>2.2.0</version>
+  </dependency>
+
+  @Configuration
+  public class OpenAPIConfig {
+
+      @Bean
+      public OpenAPI operationsAPI() {
+          return new OpenAPI()
+              .info(new Info()
+                  .title("Operations API")
+                  .version("1.0")
+                  .description("API for managing banking operations with 2FA")
+                  .contact(new Contact()
+                      .name("MiddleAPI Team")
+                      .email("team@itau.com")))
+              .servers(List.of(
+                  new Server().url("/api-operations").description("Operations Service")))
+              .components(new Components()
+                  .addSecuritySchemes("bearer-jwt", new SecurityScheme()
+                      .type(SecurityScheme.Type.HTTP)
+                      .scheme("bearer")
+                      .bearerFormat("JWT")));
+      }
+  }
+
+  @RestController
+  @RequestMapping("/v1/operations")
+  @Tag(name = "Operations", description = "Operations management API")
+  public class OperationsController {
+
+      @PostMapping
+      @Operation(summary = "Create a new operation",
+                 description = "Creates a new banking operation with security validation")
+      @ApiResponses(value = {
+          @ApiResponse(responseCode = "200", description = "Operation created successfully"),
+          @ApiResponse(responseCode = "400", description = "Invalid request data"),
+          @ApiResponse(responseCode = "422", description = "Security validation rejected")
+      })
+      public ResponseEntity<OperationsResponseDto> createOperation(
+              @Valid @RequestBody OperationsRequestDto dto) {
+          return ResponseEntity.ok(operationService.createOperation(dto));
+      }
+  }
+
+  Acceso: http://localhost:8080/api-operations/swagger-ui.html
+
+  ---
+  🟢 BAJO - Mejoras Opcionales
+
+  13. Paginación - Protección contra Abuse
+
+  Problema: No hay límite máximo de size en paginación
+
+  Recomendación (PaginationRequest):
+  public void validate() throws ValidationException {
+      if (size != null) {
+          int sizeValue = Integer.parseInt(size);
+          if (sizeValue > Constants.MAX_PAGE_SIZE) {
+              throw new ValidationException(
+                  "Page size cannot exceed " + Constants.MAX_PAGE_SIZE);
+          }
+          if (sizeValue < 1) {
+              throw new ValidationException("Page size must be at least 1");
+          }
+      }
+  }
+
+  ---
+  14. Conversión de Tipos sin Validación
+
+  Problema: GetOperationsRequestDto.java:196
+  Integer.parseInt(getOperationsRequestDto.getDocumentType())  // Puede lanzar NumberFormatException
+
+  Recomendación:
+  private Integer parseDocumentType(String documentType) {
+      try {
+          return Integer.parseInt(documentType);
+      } catch (NumberFormatException e) {
+          LOG.error("Invalid document type format: {}", documentType);
+          throw new ValidationException("Document type must be a number");
+      }
+  }
+
+  ---
+  15. Auditoría Mejorada
+
+  Problema: BaseEntity tiene createdBy/updatedBy pero no se aprovecha completamente
+
+  Recomendación:
+  @Configuration
+  @EnableJpaAuditing
+  public class JpaAuditingConfig {
+
+      @Bean
+      public AuditorAware<String> auditorProvider() {
+          return () -> Optional.ofNullable(RequestContext.getSessionData())
+              .or(() -> Optional.of("SYSTEM"));
+      }
+  }
+
+  @MappedSuperclass
+  @EntityListeners(AuditingEntityListener.class)
+  public class BaseEntity {
+
+      @Id
+      @GeneratedValue(strategy = GenerationType.UUID)
+      private UUID id;
+
+      @CreatedDate
+      @Column(name = "created_at", nullable = false, updatable = false)
+      private LocalDateTime createdAt;
+
+      @CreatedBy
+      @Column(name = "created_by", updatable = false)
+      private String createdBy;
+
+      @LastModifiedDate
+      @Column(name = "updated_at")
+      private LocalDateTime updatedAt;
+
+      @LastModifiedBy
+      @Column(name = "updated_by")
+      private String updatedBy;
+  }
+
+  ---
+  16. Health Check Mejorado
+
+  Recomendación: Usar Spring Boot Actuator completo
+  <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-actuator</artifactId>
+  </dependency>
+
+  management:
+    endpoints:
+      web:
+        exposure:
+          include: health,info,metrics,prometheus
+    endpoint:
+      health:
+        show-details: when-authorized
+        probes:
+          enabled: true
+    health:
+      db:
+        enabled: true
+      circuitbreakers:
+        enabled: true
+
+  ---
+  17. Índices de Base de Datos
+
+  Problema: Queries pueden ser lentos en producción
+
+  Recomendación: Agregar índices
+  -- En nuevo script de migración
+  CREATE INDEX idx_operations_document ON "OPERATIONS".TB_OPERATIONS (document_type, document_number);
+  CREATE INDEX idx_operations_created_at ON "OPERATIONS".TB_OPERATIONS (created_at);
+  CREATE INDEX idx_operations_status ON "OPERATIONS".TB_OPERATIONS (status);
+  CREATE INDEX idx_operations_operation_type ON "OPERATIONS".TB_OPERATIONS (operation_type);
+  CREATE INDEX idx_operations_composite ON "OPERATIONS".TB_OPERATIONS (document_type, document_number, status, created_at);
+
+  ---
+  📊 Resumen de Prioridades
+
+  | Prioridad  | Categoría                               | Items | Esfuerzo Estimado |
+  |------------|-----------------------------------------|-------|-------------------|
+  | 🔴 Crítico | Testing, Seguridad, Transacciones       | 4     | 2-3 semanas       |
+  | 🟠 Alto    | Validación, Error Handling, Resiliencia | 4     | 1-2 semanas       |
+  | 🟡 Medio   | DTOs, Logging, Documentación            | 4     | 1 semana          |
+  | 🟢 Bajo    | Optimizaciones                          | 5     | 3-5 días          |
+
+  🎯 Plan de Implementación Sugerido
+
+  Sprint 1 (2 semanas):
+  1. Agregar tests (cobertura mínima 60%)
+  2. Arreglar credenciales hardcodeadas
+  3. Corregir anotación @Transactional
+
+  Sprint 2 (2 semanas):
+  4. Separar repositorios read/write
+  5. Implementar Bean Validation
+  6. Mejorar error handling
+
+  Sprint 3 (1 semana):
+  7. Agregar Circuit Breaker
+  8. Implementar cache
+  9. Agregar OpenAPI/Swagger
+
+  Sprint 4 (1 semana):
+  10. Mejoras de logging
+  11. Índices de BD
+  12. Optimizaciones varias
+
+  ¿Te gustaría que profundice en alguna mejora específica o que te ayude a implementar alguna de ellas?
+
+⏺ He completado el análisis de tu proyecto. Aquí están las mejoras recomendadas organizadas por prioridad:
+
+  🔴 CRÍTICO - Alta Prioridad
+
+  1. Testing - Cobertura Prácticamente Nula
+
+  Problema: Solo existe un test comentado (HealthControllerTest.java:1-25)
+  - 0% de cobertura de código
+  - Sin tests unitarios ni de integración
+  - Imposible garantizar calidad del código
+
+  Impacto: Alto riesgo en producción, bugs no detectados, refactorings peligrosos
+
+  Recomendaciones:
+  // Agregar tests unitarios para servicios
+  @SpringBootTest
+  class OperationServiceImplTest {
+
+      @MockBean
+      private OperationRepository operationRepository;
+
+      @MockBean
+      private ApiClient serviceApi;
+
+      @Autowired
+      private OperationService operationService;
+
+      @Test
+      void createOperation_withValidData_shouldCreateSuccessfully() {
+          // Given
+          OperationsRequestDto request = createValidRequest();
+          Operation expected = createExpectedOperation();
+          when(operationRepository.save(any())).thenReturn(expected);
+
+          // When
+          OperationsResponseDto result = operationService.createOperation(request);
+
+          // Then
+          assertNotNull(result);
+          assertEquals(OperationStatus.PENDING, result.getStatus());
+      }
+
+      @Test
+      void confirmOperation_whenAlreadyConfirmed_shouldThrowException() {
+          // Test de casos edge
+      }
+  }
+
+  // Tests de integración
+  @SpringBootTest
+  @AutoConfigureMockMvc
+  class OperationsControllerIntegrationTest {
+
+      @Autowired
+      private MockMvc mockMvc;
+
+      @Test
+      void createOperation_endToEnd() throws Exception {
+          mockMvc.perform(post("/v1/operations")
+                  .contentType(MediaType.APPLICATION_JSON)
+                  .content(validRequestJson))
+                  .andExpect(status().isOk())
+                  .andExpect(jsonPath("$.operationId").exists());
+      }
+  }
+
+  Meta: Mínimo 80% cobertura (líneas), 70% cobertura (ramas)
+
+  ---
+  2. Seguridad - Credenciales Hardcodeadas
+
+  Problema: application.properties:33-41 contiene credenciales en texto plano
+  spring.datasource.read.url=jdbc:postgresql://localhost:5432/postgres
+  spring.datasource.read.username=postgres
+  spring.datasource.read.password=postgres  # ❌ CRÍTICO
+
+  Recomendaciones:
+  # Usar variables de entorno o Secrets Manager
+  spring.datasource.read.url=${DB_READ_URL}
+  spring.datasource.read.username=${DB_READ_USERNAME}
+  spring.datasource.read.password=${DB_READ_PASSWORD}
+
+  # O mejor, usar completamente Secrets Manager (ya tienes la dependencia)
+  spring.datasource.read.url=jdbc-secretsmanager:postgresql://${AURORA_ADDRESS_READ}/${DB_ID}
+
+  ---
+  3. Transacciones Peligrosas
+
+  Problema: OperationServiceImpl.java:65
+  @Transactional(noRollbackFor = Exception.class)  // ❌ PELIGROSO
+  public OperationsResponseDto createOperation(OperationsRequestDto dto) {
+
+  Impacto: Si ocurre un error, los datos quedan en estado inconsistente
+
+  Recomendación:
+  @Transactional  // Solo rollback en RuntimeException (comportamiento por defecto)
+  public OperationsResponseDto createOperation(OperationsRequestDto dto) {
+      // Si necesitas guardar el estado incluso con error de SEC validation
+      // usa transacciones anidadas con REQUIRES_NEW
+  }
+
+  // Para el caso específico de SEC validation
+  @Transactional
+  public OperationsResponseDto createOperation(OperationsRequestDto dto) {
+      Operation operation = operationMapper.toEntity(dto);
+      invalidatePendingOperations(operation);
+      operation = saveOperationInNewTransaction(operation);  // Nueva transacción
+
+      try {
+          if (SEC_VALIDATION_ENABLED && operation.shouldPerformSecValidation()) {
+              performSecValidation(dto, operation);
+          }
+      } catch (SecValidationRejectedException e) {
+          updateOperationStatusInNewTransaction(operation, e);  // Nueva transacción
+          throw e;
+      }
+
+      return operationMapper.toDto(operation);
+  }
+
+  @Transactional(propagation = Propagation.REQUIRES_NEW)
+  protected Operation saveOperationInNewTransaction(Operation operation) {
+      return operationRepository.save(operation);
+  }
+
+  ---
+  4. Repository Inconsistente
+
+  Problema: OperationRepository.java:18
+  @Qualifier("read")  // ❌ Marcado como "read"
+  public interface OperationRepository extends JpaRepository<Operation, UUID> {
+
+      @Modifying  // ❌ Pero hace operaciones de ESCRITURA
+      @Query("UPDATE Operation...")
+      int updateStatus(...);
+  }
+
+  Recomendación:
+  // Separar en dos repositorios
+  @Repository
+  @Qualifier("write")
+  public interface OperationWriteRepository extends JpaRepository<Operation, UUID> {
+      @Modifying
+      @Query("UPDATE Operation...")
+      int updateStatus(...);
+  }
+
+  @Repository
+  @Qualifier("read")
+  public interface OperationReadRepository extends JpaRepository<Operation, UUID> {
+      @Query("SELECT o FROM Operation o WHERE...")
+      Page<Operation> findFilteredOperations(...);
+  }
+
+  // En el servicio, inyectar ambos
+  @Service
+  public class OperationServiceImpl {
+      private final OperationWriteRepository writeRepo;
+      private final OperationReadRepository readRepo;
+  }
+
+  ---
+  🟠 ALTO - Media-Alta Prioridad
+
+  5. Validación Duplicada
+
+  Problema: Lógica duplicada en:
+  - OperationsRequestDto.java:24-34
+  - OperationsRequestValidator.java:16-30
+  - GetOperationsRequestDto.java:34-48
+
+  Recomendación:
+  // Usar Bean Validation (JSR-303)
+  public record OperationsRequestDto(
+      String operationId,
+      String sourceId,
+
+      @NotNull(message = "Document type is required")
+      @Pattern(regexp = "[123489]", message = "Invalid document type")
+      String documentType,
+
+      @NotNull(message = "Document number is required")
+      @Pattern(regexp = "[a-zA-Z0-9]{1,12}", message = "Invalid document number")
+      String documentNumber,
+
+      @NotNull
+      @ValidOperationType  // Custom validator
+      String operationType,
+
+      @NotNull
+      @ValidChannel  // Custom validator
+      String channel,
+
+      @NotNull
+      JsonNode initialData,
+
+      JsonNode additionalInformation
+  ) {
+      // Validación cruzada si es necesaria
+      @AssertTrue(message = "Invalid document number for document type")
+      public boolean isDocumentNumberValidForType() {
+          if (documentType == null || documentNumber == null) return true;
+          if (documentType.matches("[1389]")) {
+              return documentNumber.matches("[0-9]{1,12}");
+          }
+          return true;
+      }
+  }
+
+  // En el controller, usar @Valid
+  @PostMapping
+  public ResponseEntity<OperationsResponseDto> createOperation(
+          @Valid @RequestBody OperationsRequestDto dto) {  // @Valid activa validación
+      return ResponseEntity.ok(operationService.createOperation(dto));
+  }
+
+  // Custom validator
+  @Target({ElementType.FIELD})
+  @Retention(RetentionPolicy.RUNTIME)
+  @Constraint(validatedBy = OperationTypeValidator.class)
+  public @interface ValidOperationType {
+      String message() default "Invalid operation type";
+      Class<?>[] groups() default {};
+      Class<? extends Payload>[] payload() default {};
+  }
+
+  @Component
+  public class OperationTypeValidator implements ConstraintValidator<ValidOperationType, String> {
+
+      @Autowired
+      private OperationsTypeUtil operationsTypeUtil;
+
+      @Override
+      public boolean isValid(String value, ConstraintValidatorContext context) {
+          return value != null && operationsTypeUtil.isValid(value);
+      }
+  }
+
+  ---
+  6. Manejo de Errores Inconsistente
+
+  Problema: GlobalExceptionHandler.java:78
+  private ResponseEntity<ErrorResponseDto> buildErrorResponse(Exception e, String errorCode, HttpStatus status) {
+      LOG.info("Handling exception: {}", e.getMessage());  // ❌ INFO en vez de ERROR
+      // ...
+  }
+
+  Problemas adicionales:
+  - Métodos con nombres duplicados (líneas 68, 73, 74)
+  - No se loguea el stack trace
+  - No hay ID de correlación en errores
+
+  Recomendación:
+  @ControllerAdvice
+  public class GlobalExceptionHandler {
+
+      private static final Logger LOG = LoggerFactory.getLogger(GlobalExceptionHandler.class);
+
+      @ExceptionHandler(Exception.class)
+      public ResponseEntity<ErrorResponseDto> handleGenericException(Exception e) {
+          String correlationId = RequestContext.getCorrelationId();
+          LOG.error("Unhandled exception [correlationId={}]", correlationId, e);  // ✅ ERROR + stack trace
+          return buildErrorResponse(e, Constants.GENERIC_ERROR, HttpStatus.INTERNAL_SERVER_ERROR, correlationId);
+      }
+
+      @ExceptionHandler(OperationNotFoundException.class)
+      public ResponseEntity<ErrorResponseDto> handleOperationNotFound(OperationNotFoundException e) {
+          String correlationId = RequestContext.getCorrelationId();
+          LOG.warn("Operation not found [correlationId={}]: {}", correlationId, e.getMessage());
+          return buildErrorResponse(e, Constants.OPERATION_NOT_FOUND_EXCEPTION, HttpStatus.NOT_FOUND, correlationId);
+      }
+
+      @ExceptionHandler(ValidationException.class)
+      public ResponseEntity<ErrorResponseDto> handleValidation(ValidationException e) {
+          String correlationId = RequestContext.getCorrelationId();
+          LOG.warn("Validation error [correlationId={}]: {}", correlationId, e.getMessage());
+          return buildErrorResponse(e, Constants.VALIDATION_ERROR, HttpStatus.BAD_REQUEST, correlationId);
+      }
+
+      // Renombrar métodos con nombres únicos
+      @ExceptionHandler(OperationNotPendingException.class)
+      public ResponseEntity<ErrorResponseDto> handleOperationNotPending(OperationNotPendingException e) {
+          String correlationId = RequestContext.getCorrelationId();
+          LOG.warn("Operation not pending [correlationId={}]: {}", correlationId, e.getMessage());
+          return buildErrorResponse(e, Constants.VALIDATION_ERROR, HttpStatus.BAD_REQUEST, correlationId);
+      }
+
+      private ResponseEntity<ErrorResponseDto> buildErrorResponse(
+              Exception e, String errorCode, HttpStatus status, String correlationId) {
+          ErrorResponseDto errorResponse = ErrorResponseDto.builder()
+              .errorCode(errorCode)
+              .errorMessage(e.getMessage())
+              .correlationId(correlationId)
+              .timestamp(LocalDateTime.now())
+              .build();
+          return ResponseEntity.status(status).body(errorResponse);
+      }
+  }
+
+  ---
+  7. Sin Circuit Breaker para Llamadas Externas
+
+  Problema: OperationServiceImpl.java:102-109 y TwoFactorServiceImpl.java:85-92
+  - Llamadas a servicios externos sin protección
+  - Si el servicio externo falla, toda la aplicación se bloquea
+  - No hay timeout configurado
+  - No hay retry logic
+
+  Recomendación:
+  <!-- Agregar Resilience4j al pom.xml -->
+  <dependency>
+      <groupId>org.springframework.cloud</groupId>
+      <artifactId>spring-cloud-starter-circuitbreaker-resilience4j</artifactId>
+  </dependency>
+
+  @Service
+  public class OperationServiceImpl implements OperationService {
+
+      @Autowired
+      private CircuitBreakerFactory circuitBreakerFactory;
+
+      private void performSecValidation(OperationsRequestDto requestDto, Operation operation) {
+          CircuitBreaker circuitBreaker = circuitBreakerFactory.create("secValidationService");
+
+          try {
+              SecValidationResponseDto validationResponse = circuitBreaker.run(
+                  () -> callSecValidationService(requestDto, operation),
+                  throwable -> handleSecValidationFallback(throwable, operation)
+              );
+
+              processSecValidationResponse(validationResponse, operation);
+
+          } catch (Exception e) {
+              handleSecValidationException(e, operation);
+          }
+      }
+
+      private SecValidationResponseDto callSecValidationService(
+              OperationsRequestDto requestDto, Operation operation) throws Exception {
+          SecValidationRequestDto validationRequest = buildSecValidationRequest(requestDto, operation);
+
+          ResponseEntity<?> responseEntity = serviceApi.makeRequest(
+              RequestContext.getRequest(),
+              String.format("https://%s", apiPrivateCustomDomain),
+              "/api-security-validation",
+              "/v1/two-factor-auth/analyzer",
+              HttpMethod.POST,
+              validationRequest
+          );
+
+          return objectMapper.readValue(
+              Objects.requireNonNull(responseEntity.getBody()).toString(),
+              SecValidationResponseDto.class
+          );
+      }
+
+      private SecValidationResponseDto handleSecValidationFallback(
+              Throwable throwable, Operation operation) {
+          LOG.error("Circuit breaker activated for SEC validation", throwable);
+          operation.setStatus(OperationStatus.REJECTED_BY_SEC_VALIDATION_INTERNAL_ERROR);
+          operation.setSecValidationMessage("Security service temporarily unavailable");
+          operationRepository.save(operation);
+          throw new SecValidationRejectedException("Security validation service unavailable");
+      }
+  }
+
+  # application.yml
+  resilience4j:
+    circuitbreaker:
+      instances:
+        secValidationService:
+          registerHealthIndicator: true
+          slidingWindowSize: 10
+          minimumNumberOfCalls: 5
+          permittedNumberOfCallsInHalfOpenState: 3
+          waitDurationInOpenState: 30s
+          failureRateThreshold: 50
+          slowCallDurationThreshold: 2s
+          slowCallRateThreshold: 50
+
+    timelimiter:
+      instances:
+        secValidationService:
+          timeoutDuration: 5s
+
+  ---
+  8. Cache para Operation Types
+
+  Problema: OperationsTypeUtil.java:34-39
+  - Se consulta Parameter Store en cada validación
+  - Alto latency innecesario
+  - Posible bottleneck en alta concurrencia
+
+  Recomendación:
+  <!-- Agregar cache al pom.xml -->
+  <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-cache</artifactId>
+  </dependency>
+  <dependency>
+      <groupId>com.github.ben-manes.caffeine</groupId>
+      <artifactId>caffeine</artifactId>
+  </dependency>
+
+  @Configuration
+  @EnableCaching
+  public class CacheConfig {
+
+      @Bean
+      public CacheManager cacheManager() {
+          CaffeineCacheManager cacheManager = new CaffeineCacheManager("operationTypes");
+          cacheManager.setCaffeine(Caffeine.newBuilder()
+              .expireAfterWrite(1, TimeUnit.HOURS)  // Cache por 1 hora
+              .maximumSize(100)
+              .recordStats());
+          return cacheManager;
+      }
+  }
+
+  @Component
+  public class OperationsTypeUtil {
+
+      @Cacheable(value = "operationTypes", key = "'all'")
+      public List<OperationType> getAllOperationTypes() {
+          JsonNode rootNode = objectMapper.convertValue(
+              configService.getCurrentConfig().get(Constants.OPERATIONS_TYPES),
+              JsonNode.class
+          );
+          // Parse y retornar lista
+      }
+
+      public boolean isValid(String type) {
+          return getAllOperationTypes().stream()
+              .anyMatch(op -> op.getType().equals(type));
+      }
+
+      @CacheEvict(value = "operationTypes", allEntries = true)
+      @Scheduled(cron = "0 0 * * * *")  // Refresh cada hora
+      public void clearCache() {
+          LOG.info("Clearing operation types cache");
+      }
+  }
+
+  ---
+  🟡 MEDIO - Media Prioridad
+
+  9. DTOs y Validación de Channel
+
+  Problema:
+  - Channel se recibe como String en DTO pero se mapea a Enum
+  - No hay validación de valores válidos
+  - Posible IllegalArgumentException en runtime
+
+  Recomendación:
+  public record OperationsRequestDto(
+      // ...
+      @NotNull
+      @ValidChannel
+      String channel,
+      // ...
+  ) {}
+
+  @Target({ElementType.FIELD})
+  @Retention(RetentionPolicy.RUNTIME)
+  @Constraint(validatedBy = ChannelValidator.class)
+  public @interface ValidChannel {
+      String message() default "Invalid channel";
+      Class<?>[] groups() default {};
+      Class<? extends Payload>[] payload() default {};
+  }
+
+  public class ChannelValidator implements ConstraintValidator<ValidChannel, String> {
+
+      @Override
+      public boolean isValid(String value, ConstraintValidatorContext context) {
+          if (value == null) return false;
+          try {
+              Channel.valueOf(value);
+              return true;
+          } catch (IllegalArgumentException e) {
+              return false;
+          }
+      }
+  }
+
+  ---
+  10. Magic Strings y Constantes
+
+  Problema: Validaciones con regex hardcodeados repetidos
+  - OperationsRequestValidator.java:17, 20, 23
+  - GetOperationsRequestDto.java:35, 38, 41
+
+  Recomendación:
+  public class ValidationConstants {
+      public static final String DOCUMENT_TYPE_REGEX = "[123489]";
+      public static final String DOCUMENT_NUMBER_ALPHANUMERIC_REGEX = "[a-zA-Z0-9]{1,12}";
+      public static final String DOCUMENT_NUMBER_NUMERIC_REGEX = "[0-9]{1,12}";
+      public static final String NUMERIC_DOCUMENT_TYPES = "[1389]";
+
+      public static final String INVALID_DOCUMENT_TYPE_MSG = "Invalid document type. Must be 1, 2, 3, 4, 8, or 9";
+      public static final String INVALID_DOCUMENT_NUMBER_MSG = "Invalid document number. Must be 1-12 alphanumeric characters";
+
+      private ValidationConstants() {}
+  }
+
+  // Uso
+  @Pattern(regexp = ValidationConstants.DOCUMENT_TYPE_REGEX,
+           message = ValidationConstants.INVALID_DOCUMENT_TYPE_MSG)
+  String documentType;
+
+  ---
+  11. Logging Mejorado
+
+  Problema: Logging inconsistente, falta contexto
+
+  Recomendación:
+  // Usar structured logging
+  @Service
+  public class OperationServiceImpl implements OperationService {
+
+      @Override
+      public OperationsResponseDto createOperation(OperationsRequestDto dto) {
+          String correlationId = RequestContext.getCorrelationId();
+
+          LOG.info("Creating operation [correlationId={}, operationType={}, documentNumber={}, channel={}]",
+              correlationId, dto.operationType(), maskDocumentNumber(dto.documentNumber()), dto.channel());
+
+          try {
+              // ... lógica
+              LOG.info("Operation created successfully [correlationId={}, operationId={}]",
+                  correlationId, operation.getId());
+          } catch (SecValidationRejectedException e) {
+              LOG.warn("Operation rejected by security validation [correlationId={}, code={}, message={}]",
+                  correlationId, operation.getSecValidationCode(), operation.getSecValidationMessage());
+              throw e;
+          } catch (Exception e) {
+              LOG.error("Error creating operation [correlationId={}]", correlationId, e);
+              throw e;
+          }
+      }
+
+      private String maskDocumentNumber(String documentNumber) {
+          if (documentNumber == null || documentNumber.length() <= 4) return "****";
+          return "****" + documentNumber.substring(documentNumber.length() - 4);
+      }
+  }
+
+  ---
+  12. Documentación de API (OpenAPI/Swagger)
+
+  Problema: No hay documentación de API automática
+
+  Recomendación:
+  <dependency>
+      <groupId>org.springdoc</groupId>
+      <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
+      <version>2.2.0</version>
+  </dependency>
+
+  @Configuration
+  public class OpenAPIConfig {
+
+      @Bean
+      public OpenAPI operationsAPI() {
+          return new OpenAPI()
+              .info(new Info()
+                  .title("Operations API")
+                  .version("1.0")
+                  .description("API for managing banking operations with 2FA")
+                  .contact(new Contact()
+                      .name("MiddleAPI Team")
+                      .email("team@itau.com")))
+              .servers(List.of(
+                  new Server().url("/api-operations").description("Operations Service")))
+              .components(new Components()
+                  .addSecuritySchemes("bearer-jwt", new SecurityScheme()
+                      .type(SecurityScheme.Type.HTTP)
+                      .scheme("bearer")
+                      .bearerFormat("JWT")));
+      }
+  }
+
+  @RestController
+  @RequestMapping("/v1/operations")
+  @Tag(name = "Operations", description = "Operations management API")
+  public class OperationsController {
+
+      @PostMapping
+      @Operation(summary = "Create a new operation",
+                 description = "Creates a new banking operation with security validation")
+      @ApiResponses(value = {
+          @ApiResponse(responseCode = "200", description = "Operation created successfully"),
+          @ApiResponse(responseCode = "400", description = "Invalid request data"),
+          @ApiResponse(responseCode = "422", description = "Security validation rejected")
+      })
+      public ResponseEntity<OperationsResponseDto> createOperation(
+              @Valid @RequestBody OperationsRequestDto dto) {
+          return ResponseEntity.ok(operationService.createOperation(dto));
+      }
+  }
+
+  Acceso: http://localhost:8080/api-operations/swagger-ui.html
+
+  ---
+  🟢 BAJO - Mejoras Opcionales
+
+  13. Paginación - Protección contra Abuse
+
+  Problema: No hay límite máximo de size en paginación
+
+  Recomendación (PaginationRequest):
+  public void validate() throws ValidationException {
+      if (size != null) {
+          int sizeValue = Integer.parseInt(size);
+          if (sizeValue > Constants.MAX_PAGE_SIZE) {
+              throw new ValidationException(
+                  "Page size cannot exceed " + Constants.MAX_PAGE_SIZE);
+          }
+          if (sizeValue < 1) {
+              throw new ValidationException("Page size must be at least 1");
+          }
+      }
+  }
+
+  ---
+  14. Conversión de Tipos sin Validación
+
+  Problema: GetOperationsRequestDto.java:196
+  Integer.parseInt(getOperationsRequestDto.getDocumentType())  // Puede lanzar NumberFormatException
+
+  Recomendación:
+  private Integer parseDocumentType(String documentType) {
+      try {
+          return Integer.parseInt(documentType);
+      } catch (NumberFormatException e) {
+          LOG.error("Invalid document type format: {}", documentType);
+          throw new ValidationException("Document type must be a number");
+      }
+  }
+
+  ---
+  15. Auditoría Mejorada
+
+  Problema: BaseEntity tiene createdBy/updatedBy pero no se aprovecha completamente
+
+  Recomendación:
+  @Configuration
+  @EnableJpaAuditing
+  public class JpaAuditingConfig {
+
+      @Bean
+      public AuditorAware<String> auditorProvider() {
+          return () -> Optional.ofNullable(RequestContext.getSessionData())
+              .or(() -> Optional.of("SYSTEM"));
+      }
+  }
+
+  @MappedSuperclass
+  @EntityListeners(AuditingEntityListener.class)
+  public class BaseEntity {
+
+      @Id
+      @GeneratedValue(strategy = GenerationType.UUID)
+      private UUID id;
+
+      @CreatedDate
+      @Column(name = "created_at", nullable = false, updatable = false)
+      private LocalDateTime createdAt;
+
+      @CreatedBy
+      @Column(name = "created_by", updatable = false)
+      private String createdBy;
+
+      @LastModifiedDate
+      @Column(name = "updated_at")
+      private LocalDateTime updatedAt;
+
+      @LastModifiedBy
+      @Column(name = "updated_by")
+      private String updatedBy;
+  }
+
+  ---
+  16. Health Check Mejorado
+
+  Recomendación: Usar Spring Boot Actuator completo
+  <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-actuator</artifactId>
+  </dependency>
+
+  management:
+    endpoints:
+      web:
+        exposure:
+          include: health,info,metrics,prometheus
+    endpoint:
+      health:
+        show-details: when-authorized
+        probes:
+          enabled: true
+    health:
+      db:
+        enabled: true
+      circuitbreakers:
+        enabled: true
+
+  ---
+  17. Índices de Base de Datos
+
+  Problema: Queries pueden ser lentos en producción
+
+  Recomendación: Agregar índices
+  -- En nuevo script de migración
+  CREATE INDEX idx_operations_document ON "OPERATIONS".TB_OPERATIONS (document_type, document_number);
+  CREATE INDEX idx_operations_created_at ON "OPERATIONS".TB_OPERATIONS (created_at);
+  CREATE INDEX idx_operations_status ON "OPERATIONS".TB_OPERATIONS (status);
+  CREATE INDEX idx_operations_operation_type ON "OPERATIONS".TB_OPERATIONS (operation_type);
+  CREATE INDEX idx_operations_composite ON "OPERATIONS".TB_OPERATIONS (document_type, document_number, status, created_at);
+
+  ---
+  📊 Resumen de Prioridades
+
+  | Prioridad  | Categoría                               | Items | Esfuerzo Estimado |
+  |------------|-----------------------------------------|-------|-------------------|
+  | 🔴 Crítico | Testing, Seguridad, Transacciones       | 4     | 2-3 semanas       |
+  | 🟠 Alto    | Validación, Error Handling, Resiliencia | 4     | 1-2 semanas       |
+  | 🟡 Medio   | DTOs, Logging, Documentación            | 4     | 1 semana          |
+  | 🟢 Bajo    | Optimizaciones                          | 5     | 3-5 días          |
+
+  🎯 Plan de Implementación Sugerido
+
+  Sprint 1 (2 semanas):
+  1. Agregar tests (cobertura mínima 60%)
+  2. Arreglar credenciales hardcodeadas
+  3. Corregir anotación @Transactional
+
+  Sprint 2 (2 semanas):
+  4. Separar repositorios read/write
+  5. Implementar Bean Validation
+  6. Mejorar error handling
+
+  Sprint 3 (1 semana):
+  7. Agregar Circuit Breaker
+  8. Implementar cache
+  9. Agregar OpenAPI/Swagger
+
+  Sprint 4 (1 semana):
+  10. Mejoras de logging
+  11. Índices de BD
+  12. Optimizaciones varias
